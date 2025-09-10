@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from json import JSONDecodeError
 from typing import Any, Callable, TypeVar
 
@@ -40,13 +41,14 @@ T_ParamSpec = ParamSpec("T_ParamSpec")
 T = TypeVar("T")
 
 
-def initialize_retrying(max_retries: int | Retrying | AsyncRetrying, is_async: bool):
+def initialize_retrying(max_retries: int | Retrying | AsyncRetrying, is_async: bool, timeout: float | None = None):
     """
     Initialize the retrying mechanism based on the type (synchronous or asynchronous).
 
     Args:
         max_retries (int | Retrying | AsyncRetrying): Maximum number of retries or a retrying object.
         is_async (bool): Flag indicating if the retrying is asynchronous.
+        timeout (float | None): Optional timeout for the retrying mechanism.
 
     Returns:
         Retrying | AsyncRetrying: Configured retrying object.
@@ -153,10 +155,17 @@ def retry_sync(
     """
     hooks = hooks or Hooks()
     total_usage = initialize_usage(mode)
-    max_retries = initialize_retrying(max_retries, is_async=False)
+    # Extract timeout from kwargs if available (for global timeout across retries)
+    original_timeout = kwargs.get("timeout")
+    max_retries = initialize_retrying(
+        max_retries, is_async=False, timeout=original_timeout
+    )
 
     # Pre-extract stream flag to avoid repeated lookup
     stream = kwargs.get("stream", False)
+
+    # Track start time for progressive timeout
+    start_time = time.time()
 
     try:
         response = None
@@ -164,8 +173,29 @@ def retry_sync(
             with attempt:
                 logger.debug(f"Retrying, attempt: {attempt.retry_state.attempt_number}")
                 try:
-                    hooks.emit_completion_arguments(*args, **kwargs)
-                    response = func(*args, **kwargs)
+                    # Calculate progressive timeout: remaining time from original timeout
+                    if original_timeout is not None:
+                        elapsed_time = time.time() - start_time
+                        remaining_timeout = original_timeout - elapsed_time
+
+                        # If we've exceeded the total timeout, stop retrying
+                        if remaining_timeout <= 0:
+                            logger.debug(
+                                f"Total timeout exceeded: {elapsed_time:.2f}s > {original_timeout:.2f}s, stopping retries"
+                            )
+                            raise TimeoutError(f"Total timeout of {original_timeout}s exceeded")
+
+                        # Update kwargs with progressive timeout
+                        kwargs_with_timeout = kwargs.copy()
+                        kwargs_with_timeout["timeout"] = remaining_timeout
+                        logger.debug(
+                            f"Progressive timeout: {remaining_timeout:.2f}s (elapsed: {elapsed_time:.2f}s)"
+                        )
+                    else:
+                        kwargs_with_timeout = kwargs
+
+                    hooks.emit_completion_arguments(*args, **kwargs_with_timeout)
+                    response = func(*args, **kwargs_with_timeout)
                     hooks.emit_completion_response(response)
                     response = update_total_usage(
                         response=response, total_usage=total_usage
@@ -237,10 +267,17 @@ async def retry_async(
     """
     hooks = hooks or Hooks()
     total_usage = initialize_usage(mode)
-    max_retries = initialize_retrying(max_retries, is_async=True)
+    # Extract timeout from kwargs if available (for global timeout across retries)
+    original_timeout = kwargs.get("timeout")
+    max_retries = initialize_retrying(
+        max_retries, is_async=True, timeout=original_timeout
+    )
 
     # Pre-extract stream flag to avoid repeated lookup
     stream = kwargs.get("stream", False)
+
+    # Track start time for progressive timeout
+    start_time = time.time()
 
     try:
         response = None
@@ -248,8 +285,29 @@ async def retry_async(
             logger.debug(f"Retrying, attempt: {attempt.retry_state.attempt_number}")
             with attempt:
                 try:
-                    hooks.emit_completion_arguments(*args, **kwargs)
-                    response: ChatCompletion = await func(*args, **kwargs)
+                    # Calculate progressive timeout: remaining time from original timeout
+                    if original_timeout is not None:
+                        elapsed_time = time.time() - start_time
+                        remaining_timeout = original_timeout - elapsed_time
+
+                        # If we've exceeded the total timeout, stop retrying
+                        if remaining_timeout <= 0:
+                            logger.debug(
+                                f"Total timeout exceeded: {elapsed_time:.2f}s > {original_timeout:.2f}s, stopping retries"
+                            )
+                            raise TimeoutError(f"Total timeout of {original_timeout}s exceeded")
+
+                        # Update kwargs with progressive timeout
+                        kwargs_with_timeout = kwargs.copy()
+                        kwargs_with_timeout["timeout"] = remaining_timeout
+                        logger.debug(
+                            f"Progressive timeout: {remaining_timeout:.2f}s (elapsed: {elapsed_time:.2f}s)"
+                        )
+                    else:
+                        kwargs_with_timeout = kwargs
+
+                    hooks.emit_completion_arguments(*args, **kwargs_with_timeout)
+                    response: ChatCompletion = await func(*args, **kwargs_with_timeout)
                     hooks.emit_completion_response(response)
                     response = update_total_usage(
                         response=response, total_usage=total_usage

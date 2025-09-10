@@ -99,7 +99,14 @@ def from_provider(
             import openai
             from instructor import from_openai
 
-            client = openai.AsyncOpenAI() if async_client else openai.OpenAI()
+            timeout = kwargs.get("timeout")  # Extract timeout but keep it in kwargs for instructor
+            api_key = kwargs.get("api_key")
+            base_url = kwargs.get("base_url")
+            client = (
+                openai.AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+                if async_client
+                else openai.OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+            )
             return from_openai(
                 client,
                 model=model_name,
